@@ -6,10 +6,18 @@ import { useEffect, useState } from "react";
 
 export default function Home() {
   const { data: session } = useSession();
-  const [news, setNews] = useState<any>(null);
+  const [newsStories, setNewsStories] = useState<any[]>([]);
   const [lastUpdated, setLastUpdated] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [expandedStory, setExpandedStory] = useState<number | null>(null);
+
+  // Fetch news when the page loads if user is logged in
+  useEffect(() => {
+    if (session) {
+      fetchNews();
+    }
+  }, [session]);
 
   const formatDate = () => {
     const date = new Date();
@@ -29,7 +37,7 @@ export default function Home() {
     
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
       
       const response = await fetch("/api/news", {
         signal: controller.signal
@@ -46,13 +54,13 @@ export default function Home() {
         throw new Error(data.error);
       }
       
-      setNews(data.news);
-      setLastUpdated(data.lastUpdated);
+      setNewsStories(data.newsStories || []);
+      setLastUpdated(new Date().toLocaleString());
       setError(null);
     } catch (error) {
       console.error("Error fetching news:", error);
       setError(error instanceof Error ? error.message : 'Failed to load news');
-      setNews(null);
+      setNewsStories([]);
     } finally {
       setLoading(false);
     }
@@ -107,7 +115,7 @@ export default function Home() {
         {/* Header */}
         <header className="py-12 bg-gray-900 text-white border-b border-gray-800">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-            <h1 className="font-playfair text-7xl font-bold tracking-tight mb-4">THE DAILY BRIEF</h1>
+            <h1 className="font-playfair text-7xl font-bold tracking-tight mb-4">AI NEWS</h1>
             <div className="text-gray-400 text-sm font-serif italic">{formatDate()}</div>
             {session && (
               <button
@@ -132,42 +140,105 @@ export default function Home() {
               Update News
             </button>
           </div>
-          {news ? (
-            <div className="divide-y divide-gray-200">
-              {news.map((item: any, index: number) => (
-                <article key={index} className="py-8 first:pt-0 last:pb-0">
-                  <a
-                    href={item.sources[0]}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="block group"
-                  >
-
-                    <div>
-                      <span className="text-sm uppercase text-gray-500 block mb-2">{item.source}</span>
-                      <h3 className="font-playfair text-2xl font-bold mb-3 leading-tight group-hover:text-gray-600 transition-colors">
-                        {item.headline}
-                      </h3>
+          {newsStories.length > 0 ? (
+            <div className="mb-8">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                {newsStories.map((story: any, index: number) => (
+                  <article key={index} className="bg-white rounded-xl shadow-md overflow-hidden hover:shadow-lg transition-shadow duration-300">
+                    <div className="p-6">
+                      <h2 className="font-playfair text-xl font-bold mb-3 leading-tight text-gray-900 cursor-pointer"
+                        onClick={() => setExpandedStory(expandedStory === index ? null : index)}>
+                        {story.headline}
+                        <span className="ml-2 text-sm text-blue-500">
+                          {expandedStory === index ? '▲' : '▼'}
+                        </span>
+                      </h2>
+                      
+                      {expandedStory === index ? (
+                        <div className="mb-4">
+                          <div className="prose prose-sm max-w-none mb-6">
+                            {story.fullContent ? (
+                              <div>
+                                {story.fullContent.split('\n\n').map((paragraph: string, i: number) => (
+                                  paragraph.trim() && <p key={i} className="mb-3 text-gray-700">{paragraph}</p>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-gray-700 leading-relaxed">{story.summary}</p>
+                            )}
+                          </div>
+                          
+                          <div className="bg-blue-50 p-4 rounded-lg mb-4">
+                            <h4 className="font-medium text-blue-800 mb-2">AI Summary:</h4>
+                            <p className="text-gray-700 italic">{story.summary}</p>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-gray-700 text-base mb-4 leading-relaxed line-clamp-3">{story.summary}</p>
+                      )}
+                      
+                      <h3 className="text-sm font-semibold mb-2 text-gray-800 uppercase tracking-wider">Sources:</h3>
+                      <div className="space-y-2">
+                        {story.sources.map((source: any, sourceIndex: number) => (
+                          <div key={sourceIndex} className="border-l-4 border-blue-500 pl-3 py-1">
+                            <a 
+                              href={source.link}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="block"
+                            >
+                              <h4 className="font-medium text-blue-600 hover:underline text-sm mb-1 line-clamp-1">{source.title}</h4>
+                              <div className="flex items-center text-xs text-gray-500">
+                                <span>{source.source}</span>
+                              </div>
+                            </a>
+                          </div>
+                        ))}
+                      </div>
+                      
+                      <div className="mt-4 pt-3 border-t border-gray-100 flex justify-between items-center">
+                        <span className="text-xs text-gray-500">
+                          {story.publishedAt ? (
+                            <>Published: {new Date(story.publishedAt).toLocaleDateString()}</>
+                          ) : (
+                            <>Updated: {new Date().toLocaleDateString()}</>
+                          )}
+                        </span>
+                        <div>
+                          <button 
+                            className="text-xs text-blue-600 hover:text-blue-800 font-medium mr-3" 
+                            onClick={() => setExpandedStory(expandedStory === index ? null : index)}
+                          >
+                            {expandedStory === index ? 'Show Less' : 'Show More'}
+                          </button>
+                          <button 
+                            className="text-xs text-blue-600 hover:text-blue-800 font-medium" 
+                            onClick={() => window.open(story.sources[0].link, '_blank')}
+                          >
+                            Read Original →
+                          </button>
+                        </div>
+                      </div>
                     </div>
-                    <p className="text-gray-600 text-lg mb-3 leading-relaxed">{item.summary}</p>
-                    <div className="flex items-center text-sm text-gray-500">
-                      <time>{item.date}</time>
-                      <span className="mx-2">·</span>
-                      <span>{new URL(item.sources[0]).hostname.replace('www.', '')}</span>
-                    </div>
-                  </a>
-                </article>
-              ))}
+                  </article>
+                ))}
+              </div>
             </div>
           ) : loading ? (
             <div className="py-8">
-              <div className="space-y-8">
-                {[...Array(3)].map((_, i) => (
-                  <div key={i} className="animate-pulse">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                {[...Array(6)].map((_, i) => (
+                  <div key={i} className="bg-white rounded-xl shadow-md overflow-hidden p-6 animate-pulse">
                     <div className="h-6 w-3/4 bg-gray-200 mb-4"></div>
                     <div className="h-4 w-full bg-gray-100 mb-2"></div>
                     <div className="h-4 w-full bg-gray-100 mb-2"></div>
-                    <div className="h-4 w-2/3 bg-gray-100"></div>
+                    <div className="h-4 w-2/3 bg-gray-100 mb-6"></div>
+                    <div className="h-3 w-1/3 bg-gray-200 mb-3"></div>
+                    <div className="space-y-2">
+                      <div className="h-3 w-full bg-gray-100 mb-1"></div>
+                      <div className="h-3 w-full bg-gray-100 mb-1"></div>
+                      <div className="h-3 w-full bg-gray-100"></div>
+                    </div>
                   </div>
                 ))}
               </div>
