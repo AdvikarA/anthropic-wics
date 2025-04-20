@@ -22,7 +22,9 @@ export async function POST(req: Request) {
       }],
     });
 
-    return NextResponse.json({ summary: completion.content[0].text }, { status: 200 });
+    // Access the content correctly from the Anthropic API response
+    const summary = completion.content[0].type === 'text' ? completion.content[0].text : '';
+    return NextResponse.json({ summary }, { status: 200 });
   } catch (error) {
     console.error('Error:', error);
     return NextResponse.json(
