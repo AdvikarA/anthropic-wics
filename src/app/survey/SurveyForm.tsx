@@ -11,7 +11,6 @@ import {
   Legend
 } from "chart.js";
 import { motion, AnimatePresence } from "framer-motion";
-import { SimpleDialog } from "../components/SimpleDialog";
 
 ChartJS.register(
   RadialLinearScale,
@@ -211,11 +210,9 @@ export default function SurveyForm() {
   const router = useRouter();
   const [currentQuestion, setCurrentQuestion] = useState(0);
   const [responses, setResponses] = useState<{value: number, weight: number}[]>(Array(questions.length).fill({value: 0, weight: 0}));
-  const [results, setResults] = useState<any | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
-  const [showResults, setShowResults] = useState(false);
 
   useEffect(() => {
     // Update progress bar
@@ -243,28 +240,23 @@ export default function SurveyForm() {
     setError(null);
     
     try {
-      // Transform responses for API
-      const apiResponses = responses.map(r => ({
-        value: r.value,
-        weight: r.weight
-      }));
-      
       const res = await fetch("/api/survey", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ responses: apiResponses })
+        body: JSON.stringify({ 
+          responses: responses.map(r => ({
+            value: r.value,
+            weight: r.weight
+          }))
+        })
       });
       
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to fetch results");
-      setResults(data);
-      setShowResults(true);
-      // Redirect to main page after a short delay
-      setTimeout(() => {
-        router.push('/');
-      }, 500);
+      if (!res.ok) throw new Error(await res.text());
+      
+      // Redirect to home page after successful submission
+      router.push('/');
     } catch (err: any) {
-      setError(err.message);
+      setError(err.message || "Submission failed");
     } finally {
       setLoading(false);
     }
@@ -278,11 +270,6 @@ export default function SurveyForm() {
 
   return (
     <>
-      <SimpleDialog 
-        isOpen={showResults} 
-        onClose={() => setShowResults(false)} 
-        results={results} 
-      />
       <div className="max-w-2xl mx-auto bg-white rounded-xl shadow-lg overflow-hidden">
         {/* Progress bar */}
         <div className="w-full bg-gray-200 h-1">

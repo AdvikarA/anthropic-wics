@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import clientPromise from "@/lib/mongodb";
-import { getServerSession } from "next-auth/next";
-import { authOptions } from "@/lib/auth";
+import { cookies } from "next/headers";
+import { createClient } from '@supabase/supabase-js';
+import { adminClient } from '@/lib/auth';
 
 // Category indexes mapping
 const categories: Record<string, number[]> = {
@@ -24,9 +24,36 @@ const categories: Record<string, number[]> = {
 };
 
 export async function POST(request: Request) {
-  // Get session if available, but don't require it
-  const session = await getServerSession(authOptions);
+  console.log("Survey submission started");
   
+  // Create a Supabase client with the user's session cookie
+  const cookieStore = cookies();
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+  
+  // Create a supabase client with admin privileges
+  const supabase = createClient(supabaseUrl, supabaseKey, {
+    auth: {
+      persistSession: false,
+    }
+  });
+  
+  // Get the user's session from the cookie
+  const supabaseAuthCookie = cookieStore.get('sb-auth-token')?.value;
+  let userId = null;
+  
+  if (supabaseAuthCookie) {
+    try {
+      const { data: { user } } = await supabase.auth.getUser(supabaseAuthCookie);
+      userId = user?.id;
+      console.log("Authenticated user ID:", userId);
+    } catch (error) {
+      console.error("Error getting user from session:", error);
+    }
+  } else {
+    console.log("No authentication cookie found");
+  }
+
   try {
     const { responses }: { responses: {value: number, weight: number}[] } = await request.json();
 
@@ -74,36 +101,73 @@ export async function POST(request: Request) {
       antiPolarizationLevel = "Very Low";
     }
 
-    // Store in database if user is authenticated
-    if (session?.user?.email) {
-      const client = await clientPromise;
-      const db = client.db();
-      await db.collection("users").updateOne(
-        { email: session.user.email },
-        { 
-          $set: { 
-            survey: { 
-              responses, 
-              results, 
-              engagementScore, 
-              antiPolarizationScore,
-              antiPolarizationLevel,
-              updatedAt: new Date() 
-            } 
-          } 
-        },
-        { upsert: true }
-      );
+    const surveyData = {
+      ...results,
+      engagementScore,
+      antiPolarizationScore,
+      antiPolarizationLevel,
+      updatedAt: new Date().toISOString()
+    };
+
+    // Store survey results in Supabase
+    if (userId) {
+      console.log("Attempting to save survey results for user:", userId);
+      console.log("Survey data to save:", JSON.stringify(surveyData));
+      
+      try {
+        // First try to get the user to see if they exist
+        const { data: userData, error: fetchError } = await adminClient
+          .from('users')
+          .select('id')
+          .eq('id', userId)
+          .single();
+          
+        if (fetchError) {
+          console.error("Error fetching user:", fetchError);
+          
+          // If user doesn't exist in our table, insert them
+          if (fetchError.code === 'PGRST116') {
+            console.log("User not found in table, creating new record");
+            const { error: insertError } = await adminClient
+              .from('users')
+              .insert({ id: userId, survey_results: surveyData });
+              
+            if (insertError) {
+              console.error("Error inserting user:", insertError);
+              throw insertError;
+            }
+          } else {
+            throw fetchError;
+          }
+        } else {
+          // User exists, update their survey results
+          console.log("User found, updating survey results");
+          const { error: updateError } = await adminClient
+            .from('users')
+            .update({ survey_results: surveyData })
+            .eq('id', userId);
+            
+          if (updateError) {
+            console.error("Error updating user survey results:", updateError);
+            throw updateError;
+          }
+        }
+        
+        console.log("Survey results saved successfully");
+      } catch (err) {
+        console.error("Error saving survey results:", err);
+        throw err;
+      }
+    } else {
+      console.log("No authenticated user, skipping survey results save");
     }
-    
-    return NextResponse.json({ 
-      ...results, 
-      engagementScore, 
-      antiPolarizationScore, 
-      antiPolarizationLevel
-    });
-  } catch (error: any) {
-    console.error("Survey API error:", error);
-    return NextResponse.json({ error: error.message || "Failed to process survey" }, { status: 500 });
+
+    return NextResponse.json(surveyData);
+  } catch (err: any) {
+    console.error("Survey submission error:", err);
+    return NextResponse.json(
+      { error: err.message || "An unexpected error occurred" },
+      { status: 500 }
+    );
   }
 }
