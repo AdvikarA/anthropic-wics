@@ -23,23 +23,49 @@ export async function GET(request: Request) {
   };
 
   try {
-    // Import the Supabase service to fetch news stories
-    const { getNewsStories, saveNewsStory } = await import('@/lib/supabase-service');
+    // Check for a refresh query parameter to determine if we should fetch new data
+    const url = new URL(request.url);
+    const shouldRefresh = url.searchParams.get('refresh') === 'true';
     
-    // If there are stories in Supabase, return them
-    const existingStories = await getNewsStories();
-    if (existingStories.length > 0) {
-      console.log(`Found ${existingStories.length} existing stories in Supabase`);
+    if (!shouldRefresh) {
+      console.log('No refresh parameter found, returning empty news stories');
       return NextResponse.json({ 
-        newsStories: existingStories,
+        newsStories: [],
         timestamp: new Date().toISOString()
       }, { status: 200 });
     }
     
-    // If no stories in Supabase, fetch from NewsAPI only when explicitly requested
-    // Check for a refresh query parameter to determine if we should fetch new data
-    const url = new URL(request.url);
-    const shouldRefresh = url.searchParams.get('refresh') === 'true';
+    console.log('Refresh parameter found, fetching news...');
+    
+    // Try to import the Supabase service to fetch news stories
+    let getNewsStories: any = null;
+    let saveNewsStory: any = null;
+    
+    try {
+      const supabaseService = await import('@/lib/supabase-service');
+      getNewsStories = supabaseService.getNewsStories;
+      saveNewsStory = supabaseService.saveNewsStory;
+      
+      // If there are stories in Supabase, return them
+      if (typeof getNewsStories === 'function') {
+        try {
+          const existingStories = await getNewsStories();
+          if (existingStories && existingStories.length > 0) {
+            console.log(`Found ${existingStories.length} existing stories in Supabase`);
+            return NextResponse.json({ 
+              newsStories: existingStories,
+              timestamp: new Date().toISOString()
+            }, { status: 200 });
+          }
+        } catch (dbError) {
+          console.error('Error fetching from Supabase:', dbError);
+          // Continue to fallback if Supabase fails
+        }
+      }
+    } catch (importError) {
+      console.error('Error importing Supabase service:', importError);
+      // Continue to fallback if import fails
+    }
     
     if (!shouldRefresh) {
       console.log('No refresh parameter found, returning empty news stories');
@@ -261,12 +287,16 @@ export async function GET(request: Request) {
       
       newsStories.push(newsStory);
       
-      // Save to Supabase
-      try {
-        await saveNewsStory(newsStory);
-        console.log(`Saved story to Supabase: ${mainArticle.title.substring(0, 30)}...`);
-      } catch (saveError) {
-        console.error('Error saving to Supabase:', saveError);
+      // Save to Supabase if the function is available
+      if (typeof saveNewsStory === 'function') {
+        try {
+          await saveNewsStory(newsStory);
+          console.log(`Saved story to Supabase: ${mainArticle.title.substring(0, 30)}...`);
+        } catch (saveError) {
+          console.error('Error saving to Supabase:', saveError);
+        }
+      } else {
+        console.log('Skipping Supabase save - saveNewsStory function not available');
       }
     }
     

@@ -1,0 +1,479 @@
+"use client";
+
+import React from "react";
+import { useState, useEffect } from "react";
+import Image from 'next/image';
+import { supabase } from '@/lib/supabase-client';
+import { useRouter } from 'next/navigation';
+
+interface NewsSource {
+  title: string;
+  source: string;
+  link: string;
+}
+
+interface UniqueClaim {
+  source: string;
+  claims: string;
+  bias?: 'left' | 'right' | 'center' | 'unknown';
+}
+
+interface NewsStory {
+  headline: string;
+  summary: string;
+  sources: NewsSource[];
+  publishedAt?: string;
+  fullContent?: string;
+  category?: string;
+  commonFacts?: string;
+  uniqueClaims?: UniqueClaim[];
+  sourceBias?: {
+    source: string;
+    bias: 'left' | 'right' | 'center' | 'unknown';
+    biasQuotes: string[];
+  }[];
+  imageUrl?: string;
+}
+
+export default function Home() {
+  const [session, setSession] = useState<any>(null);
+  const [newsStories, setNewsStories] = useState<NewsStory[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [expandedStories, setExpandedStories] = useState<string[]>([]);
+  const [expandedSources, setExpandedSources] = useState<string[]>([]);
+  const router = useRouter();
+
+  // Check for Supabase session on load
+  useEffect(() => {
+    let isRedirecting = false;
+    let mounted = true;
+    
+    const getSession = async () => {
+      try {
+        // Only proceed if component is still mounted
+        if (!mounted) return;
+        
+        const { data, error } = await supabase.auth.getSession();
+        console.log('Home page session check:', data.session ? 'Logged in' : 'Not logged in');
+        
+        if (error) {
+          console.error('Session error:', error.message);
+          return;
+        }
+        
+        // Only set session if component is still mounted
+        if (mounted) {
+          setSession(data.session);
+          
+          // If we have a session and no news stories, fetch news
+          if (data.session && newsStories.length === 0) {
+            fetchNews(false);
+          } else if (!data.session && !isRedirecting) {
+            // Only redirect once
+            isRedirecting = true;
+            console.log('No session found, redirecting to login');
+            // Add a delay to prevent immediate redirect
+            setTimeout(() => {
+              if (mounted) {
+                router.push('/auth/login');
+              }
+            }, 100);
+          }
+        }
+        
+        // Set up auth state change listener
+        const { data: authListener } = supabase.auth.onAuthStateChange((event, newSession) => {
+          console.log('Auth state changed:', event);
+          
+          // Only update if component is still mounted
+          if (mounted) {
+            setSession(newSession);
+            
+            // If user signed out, redirect to login
+            if (event === 'SIGNED_OUT' && !isRedirecting) {
+              isRedirecting = true;
+              router.push('/auth/login');
+            }
+          }
+        });
+        
+        // Cleanup function
+        return () => {
+          authListener.subscription.unsubscribe();
+        };
+      } catch (error) {
+        console.error('Error checking session:', error);
+      }
+    };
+    
+    getSession();
+    
+    // Cleanup function for the effect
+    return () => {
+      mounted = false;
+      isRedirecting = true;
+    };
+  }, [router, newsStories.length]);
+
+  const fetchNews = async (refresh = false) => {
+    if (!session) return;
+    
+    setIsLoading(true);
+    setError(null);
+    
+    try {
+      // Create a controller with a timeout to avoid hanging requests
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+      
+      try {
+        // Add refresh parameter if requested
+        const url = refresh ? "/api/news?refresh=true" : "/api/news";
+        console.log(`Fetching news from ${url}`);
+        
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: {
+            'Cache-Control': 'no-cache'
+          }
+        });
+        
+        // Clear the timeout since we got a response
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        if (data.error) {
+          throw new Error(data.error);
+        }
+
+        // Debug the received news stories to check for bias information
+        console.log('Received news stories:', data.newsStories?.length || 0);
+        if (data.newsStories && data.newsStories.length > 0) {
+          // Check the first story for bias info
+          const firstStory = data.newsStories[0];
+          console.log('First story has sourceBias:', !!firstStory.sourceBias);
+          if (firstStory.sourceBias) {
+            console.log('Number of sources with bias:', firstStory.sourceBias.length);
+            console.log('Sample bias info:', firstStory.sourceBias[0]);
+          }
+          
+          // Check all stories
+          let totalBiasSourcesCount = 0;
+          data.newsStories.forEach((story: NewsStory, idx: number) => {
+            if (story.sourceBias && story.sourceBias.length > 0) {
+              totalBiasSourcesCount += story.sourceBias.length;
+              console.log(`Story ${idx} has ${story.sourceBias.length} sources with bias info`);
+            }
+          });
+          console.log('Total sources with bias across all stories:', totalBiasSourcesCount);
+        }
+        
+        setNewsStories(data.newsStories || []);
+        setError(null);
+      } catch (fetchError: any) {
+        // If the controller aborted the request, provide a clearer error message
+        if (fetchError && fetchError.name === 'AbortError') {
+          throw new Error('Request timed out. Please try again.');
+        }
+        throw fetchError;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch (error) {
+      console.error("Error fetching news:", error);
+      setError(error instanceof Error ? error.message : 'Failed to load news');
+      setNewsStories([]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const toggleContent = (storyKey: string) => {
+    setExpandedStories(prev => {
+      if (prev.includes(storyKey)) {
+        return prev.filter(key => key !== storyKey);
+      } else {
+        return [...prev, storyKey];
+      }
+    });
+  };
+
+  const toggleSource = (sourceKey: string) => {
+    setExpandedSources(prev => {
+      if (prev.includes(sourceKey)) {
+        return prev.filter(key => key !== sourceKey);
+      } else {
+        return [...prev, sourceKey];
+      }
+    });
+  };
+
+  // Helper function to get bias color
+  const getBiasColor = (bias?: string) => {
+    switch (bias) {
+      case 'left': return '#0066cc';
+      case 'right': return '#cc0000';
+      case 'center': return '#008800';
+      default: return '#666666';
+    }
+  };
+
+  // Show loading state while checking session
+  if (isLoading && newsStories.length === 0) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100">
+        <div className="bg-white p-8 rounded-lg shadow-md text-center">
+          <h1 className="text-2xl font-bold mb-4">Loading News AI</h1>
+          <p className="mb-4">Please wait while we load your content...</p>
+          <div className="animate-pulse flex space-x-4 justify-center">
+            <div className="rounded-full bg-gray-300 h-10 w-10"></div>
+            <div className="rounded-full bg-gray-300 h-10 w-10"></div>
+            <div className="rounded-full bg-gray-300 h-10 w-10"></div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  
+  // Only redirect if we've checked for a session and confirmed it doesn't exist
+  if (!session) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-100">
+        <div className="bg-white p-8 rounded-lg shadow-md text-center">
+          <h1 className="text-2xl font-bold mb-4">Welcome to News AI</h1>
+          <p className="mb-4">Please sign in to view the latest news</p>
+          <button
+            onClick={() => router.push('/auth/login')}
+            className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
+          >
+            Sign in
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <main className="flex min-h-screen flex-col">
+      <div className="flex-grow">
+        {/* Top bar */}
+        <div className="top-bar">
+          <div className="top-bar-content">
+            <div className="date-display">
+              {new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+            </div>
+            <div>
+              {session ? (
+                <span>{session.user?.email}</span>
+              ) : (
+                <span>Not logged in</span>
+              )}
+            </div>
+          </div>
+        </div>
+        
+        {/* Header */}
+        <header className="site-header">
+          <div className="header-content">
+            <h1 className="logo">AI News</h1>
+            <nav className="nav-container">
+              <ul className="nav-list">
+                <li className="nav-item"><a href="#">Top Stories</a></li>
+                <li className="nav-item"><a href="#">Politics</a></li>
+                <li className="nav-item"><a href="#">Technology</a></li>
+                <li className="nav-item"><a href="#">Business</a></li>
+                <li className="nav-item"><a href="#">Science</a></li>
+                <li className="nav-item"><a href="#">Health</a></li>
+              </ul>
+            </nav>
+          </div>
+          <div className="matrix-overlay"></div>
+        </header>
+        
+        {/* Main content */}
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          <div className="control-buttons">
+            <button 
+              className="btn btn-primary" 
+              onClick={() => fetchNews(true)}
+              disabled={isLoading}
+            >
+              {isLoading ? 'Loading...' : 'Refresh News'}
+            </button>
+            <button 
+              className="btn btn-secondary" 
+              onClick={() => supabase.auth.signOut()}
+            >
+              Sign Out
+            </button>
+          </div>
+          
+          {isLoading ? (
+            <div className="loading-container">
+              <div className="spinner"></div>
+            </div>
+          ) : (
+            <div className="news-grid">
+              {newsStories.map((story, index) => {
+                const storyKey = `story-${index}`;
+                return (
+                  <div key={storyKey} className="news-card">
+                    {story.imageUrl && (
+                      <div className="card-image">
+                        <img 
+                          src={story.imageUrl} 
+                          alt={story.headline} 
+                          className="news-card-image"
+                        />
+                      </div>
+                    )}
+                    <div className="card-content">
+                      <h2 className="card-title">{story.headline}</h2>
+                      <p className="card-description">{story.summary}</p>
+                      
+                      <div className="source-list">
+                        <button
+                          onClick={() => toggleSource(storyKey)}
+                          className="text-sm text-gray-600 mb-2 underline"
+                        >
+                          {expandedSources.includes(storyKey) ? 'Hide Sources' : 'Show Sources'}
+                        </button>
+                        
+                        {expandedSources.includes(storyKey) && (
+                          <div className="mt-2">
+                            {story.sources.map((source, sourceIndex) => (
+                              <div key={`${storyKey}-source-${sourceIndex}`} className="source-item">
+                                <a href={source.link} target="_blank" rel="noopener noreferrer" className="source-link">
+                                  {source.title}
+                                </a>
+                                <span> - {source.source}</span>
+                                
+                                {story.sourceBias && story.sourceBias.find(sb => sb.source === source.source) && (
+                                  <span className={`bias-tag bias-${story.sourceBias.find(sb => sb.source === source.source)?.bias || 'unknown'}`}>
+                                    {story.sourceBias.find(sb => sb.source === source.source)?.bias || 'unknown'}
+                                  </span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      
+                      {story.commonFacts && (
+                        <div className="common-facts">
+                          {story.commonFacts}
+                        </div>
+                      )}
+                      
+                      {story.sourceBias && story.sourceBias.length > 0 && (
+                        <div className="mt-4">
+                          <button
+                            onClick={() => toggleContent(storyKey)}
+                            className="text-sm text-gray-600 mb-2 underline"
+                          >
+                            {expandedStories.includes(storyKey) ? 'Hide Bias Analysis' : 'Show Bias Analysis'}
+                          </button>
+                          
+                          {expandedStories.includes(storyKey) && (
+                            <div className="mt-2">
+                              {story.sourceBias.map((bias, biasIndex) => {
+                                return (
+                                  <div key={`${storyKey}-bias-${biasIndex}`} className="mb-4">
+                                    <div className="flex items-center mb-2">
+                                      <span className="font-medium">{bias.source}:</span>
+                                      <span className={`ml-2 bias-tag bias-${bias.bias}`}>{bias.bias}</span>
+                                    </div>
+                                    
+                                    {bias.biasQuotes && bias.biasQuotes.length > 0 && (
+                                      <div className="quotes-container">
+                                        <p className="text-sm mb-1">Quotes indicating bias:</p>
+                                        <div className="space-y-1">
+                                          {bias.biasQuotes.map((quote, quoteIndex) => (
+                                            <blockquote key={`${storyKey}-bias-${biasIndex}-quote-${quoteIndex}`} className="quote-item">
+                                              "{quote}"
+                                            </blockquote>
+                                          ))}
+                                        </div>
+                                        <div className="mt-3 text-xs text-gray-500 italic">
+                                          These quotes may indicate political leaning or bias in the reporting.
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      
+                      {story.fullContent && (
+                        <div className="mt-6">
+                          <button
+                            onClick={() => toggleContent(storyKey)}
+                            className="text-gray-800 hover:text-gray-600 font-serif font-medium underline"
+                          >
+                            {expandedStories.includes(storyKey) ? 'Hide Full Content' : 'Show Full Content'}
+                          </button>
+                          
+                          {expandedStories.includes(storyKey) && (
+                            <div className="mt-4 p-5 bg-gray-50 border-l-2 border-gray-300">
+                              <p className="whitespace-pre-line font-serif leading-relaxed">{story.fullContent}</p>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      
+                      <div className="mt-6 pt-4 border-t border-gray-200 flex justify-between items-center">
+                        <span className="text-xs text-gray-500 font-serif italic">
+                          {story.publishedAt ? (
+                            <>Published: {new Date(story.publishedAt).toLocaleDateString()}</>
+                          ) : (
+                            <>Updated: {new Date().toLocaleDateString()}</>
+                          )}
+                        </span>
+                        <div>
+                          <button 
+                            className="text-xs text-gray-700 hover:text-gray-900 font-serif mr-4" 
+                            onClick={() => alert('Saved for later!')}
+                          >
+                            Save
+                          </button>
+                          <button 
+                            className="text-xs text-gray-700 hover:text-gray-900 font-serif" 
+                            onClick={() => alert('Shared!')}
+                          >
+                            Share
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            
+            {newsStories.length === 0 && !isLoading && (
+              <div className="text-center py-16 border border-gray-200">
+                <p className="text-gray-500">No news stories available. Click "Refresh News" to fetch the latest stories.</p>
+                <p className="text-gray-600 font-serif">Click the Refresh News button to load the latest stories.</p>
+                {error && <p className="text-red-500 mt-2 font-serif">{error}</p>}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      
+      {/* Footer */}
+      <footer className="mt-auto py-6 bg-gray-900 text-white">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+          <p className="text-sm text-gray-400">© {new Date().getFullYear()} AI News. All rights reserved.</p>
+        </div>
+      </footer>
+    </main>
+  );
+}

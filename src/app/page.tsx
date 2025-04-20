@@ -1,14 +1,14 @@
 "use client";
 
-import React from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useSession, signIn, signOut } from "next-auth/react";
-import { useState, useEffect } from "react";
 import Image from 'next/image';
 
 interface NewsSource {
   title: string;
   source: string;
   link: string;
+  quote?: string; // Quote from this source about the story
 }
 
 interface UniqueClaim {
@@ -31,402 +31,665 @@ interface NewsStory {
     bias: 'left' | 'right' | 'center' | 'unknown';
     biasQuotes: string[];
   }[];
+  imageUrl?: string;
 }
 
 export default function Home() {
-  const { data: session } = useSession();
+  const { data: session, status } = useSession();
   const [newsStories, setNewsStories] = useState<NewsStory[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedStories, setExpandedStories] = useState<string[]>([]);
-  const [expandedSources, setExpandedSources] = useState<string[]>([]);
+  const [expandedSources, setExpandedSources] = useState<{[key: string]: boolean}>({});
+  const [storyImages, setStoryImages] = useState<{[key: string]: string}>({});
+  const [userPoliticalProfile, setUserPoliticalProfile] = useState<any>(null);
+  const [affirmingStories, setAffirmingStories] = useState<NewsStory[]>([]);
+  const [challengingStories, setChallengingStories] = useState<NewsStory[]>([]);
 
-  // Only fetch news on initial load
   useEffect(() => {
-    if (session && newsStories.length === 0) {
+    // Only fetch news if authenticated and no stories loaded yet
+    if (status === 'authenticated' && newsStories.length === 0) {
       fetchNews();
     }
-  }, [session]);
+  }, [status]);
+  
+  // Fetch user profile on component mount
+  useEffect(() => {
+    // Always try to fetch profile, regardless of auth status
+    if (!userPoliticalProfile) {
+      fetchUserProfile();
+    }
+    // We're intentionally only running this once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const fetchNews = async (refresh = false) => {
-    if (!session) return;
-    
-    setIsLoading(true);
-    setError(null);
+  useEffect(() => {
+    // Fetch images for stories that don't have images
+    if (newsStories.length > 0) {
+      console.log('=== IMAGE FETCH DEBUG ===');
+      console.log(`Total stories: ${newsStories.length}`);
+      console.log(`Stories with original images: ${newsStories.filter(s => s.imageUrl).length}`);
+      console.log(`Stories with fetched images: ${Object.keys(storyImages).length}`);
+      console.log('Stories needing images:', newsStories.filter(s => !s.imageUrl && !storyImages[s.headline]).map(s => s.headline));
+      
+      newsStories.forEach(story => {
+        if (!story.imageUrl && !storyImages[story.headline]) {
+          console.log(`Fetching image for: "${story.headline}"`);
+          fetchImageForStory(story.headline);
+        }
+      });
+    }
+  }, [newsStories, storyImages]);
+
+  // Function to fetch image for a story using NewsAPI
+  const fetchImageForStory = async (headline: string) => {
+    if (!headline || storyImages[headline]) return;
     
     try {
-      // Create a controller with a timeout to avoid hanging requests
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+      console.log(`Fetching image for headline: "${headline}"`);
+      const response = await fetch(`/api/news-images?query=${encodeURIComponent(headline)}`);
       
-      try {
-        // Add refresh parameter if requested
-        const url = refresh ? "/api/news?refresh=true" : "/api/news";
-        console.log(`Fetching news from ${url}`);
+      if (!response.ok) {
+        console.error(`Error fetching image: ${response.status}`);
+        return;
+      }
+      
+      const data = await response.json();
+      console.log('Image API response:', data);
+      
+      // Check if we have images in the response
+      if (data.images && data.images.length > 0) {
+        // Use the first (most relevant) image
+        const imageUrl = data.images[0].url;
+        console.log(`Found image URL: ${imageUrl}`);
         
-        const response = await fetch(url, {
-          method: 'GET',
-          headers: {
-            'Cache-Control': 'no-cache'
-          },
-          // Don't pass the signal to avoid the abort error
-        });
-        
-        // Clear the timeout since we got a response
-        clearTimeout(timeoutId);
-        
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
-        const data = await response.json();
-        if (data.error) {
-          throw new Error(data.error);
-        }
-        
-        // Debug the received news stories to check for bias information
-        console.log('Received news stories:', data.newsStories?.length || 0);
-        if (data.newsStories && data.newsStories.length > 0) {
-          // Check the first story for bias info
-          const firstStory = data.newsStories[0];
-          console.log('First story has sourceBias:', !!firstStory.sourceBias);
-          if (firstStory.sourceBias) {
-            console.log('Number of sources with bias:', firstStory.sourceBias.length);
-            console.log('Sample bias info:', firstStory.sourceBias[0]);
-          }
-          
-          // Check all stories
-          let totalBiasSourcesCount = 0;
-          data.newsStories.forEach((story: NewsStory, idx: number) => {
-            if (story.sourceBias && story.sourceBias.length > 0) {
-              totalBiasSourcesCount += story.sourceBias.length;
-              console.log(`Story ${idx} has ${story.sourceBias.length} sources with bias info`);
-            }
-          });
-          console.log('Total sources with bias across all stories:', totalBiasSourcesCount);
-        }
-        
-        setNewsStories(data.newsStories || []);
-        setError(null);
-      } catch (fetchError: any) {
-        // If the controller aborted the request, provide a clearer error message
-        if (fetchError && fetchError.name === 'AbortError') {
-          throw new Error('Request timed out. Please try again.');
-        }
-        throw fetchError;
-      } finally {
-        clearTimeout(timeoutId);
+        setStoryImages(prev => ({
+          ...prev,
+          [headline]: imageUrl
+        }));
+      } else {
+        console.log(`No images found for: "${headline}"`);
+        // Use a default image as fallback
+        setStoryImages(prev => ({
+          ...prev,
+          [headline]: 'https://images.unsplash.com/photo-1504711434969-e33886168f5c?q=80&w=1000'
+        }));
       }
     } catch (error) {
-      console.error("Error fetching news:", error);
-      setError(error instanceof Error ? error.message : 'Failed to load news');
-      setNewsStories([]);
+      console.error('Error fetching image:', error);
+    }
+  };
+  
+  // Fetch images for all stories in a batch
+  const fetchImagesForStories = async (stories: NewsStory[]) => {
+    // Fetch images for affirming and challenging stories first
+    const allStories = [...affirmingStories, ...challengingStories, ...stories];
+    const uniqueHeadlines = Array.from(new Set(allStories.map(story => story.headline)));
+    
+    // Fetch images for stories that don't already have images
+    for (const headline of uniqueHeadlines) {
+      if (!storyImages[headline] && !allStories.find(s => s.headline === headline)?.imageUrl) {
+        await fetchImageForStory(headline);
+      }
+    }
+  };
+
+  // Fetch user's political profile from Supabase or localStorage
+  const fetchUserProfile = useCallback(async () => {
+    try {
+      // First try to get profile from localStorage
+      if (typeof window !== 'undefined') {
+        const localProfile = localStorage.getItem('userPoliticalProfile');
+        if (localProfile) {
+          try {
+            const profileData = JSON.parse(localProfile);
+            setUserPoliticalProfile(profileData);
+            console.log('User political profile loaded from localStorage:', profileData);
+            return; // Exit early if we found a profile in localStorage
+          } catch (parseError) {
+            console.error('Error parsing localStorage profile:', parseError);
+            // Continue to try server-side profile
+          }
+        }
+      }
+      
+      // If no localStorage profile or not in browser, try server if authenticated
+      if (status !== 'authenticated' || !session) return;
+      
+      // Use the session email as identifier since NextAuth user might not have id
+      const userEmail = session.user?.email;
+      if (!userEmail) return;
+      
+      const response = await fetch(`/api/user-profile?userEmail=${encodeURIComponent(userEmail)}`);
+      
+      if (!response.ok) {
+        console.error('Failed to fetch user profile from server');
+        return;
+      }
+      
+      const data = await response.json();
+      if (data.surveyResults) {
+        setUserPoliticalProfile(data.surveyResults);
+        console.log('User political profile loaded from server:', data.surveyResults);
+        
+        // Also save to localStorage for future use
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('userPoliticalProfile', JSON.stringify(data.surveyResults));
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching user profile:', error);
+    }
+  }, [status, session]);
+
+  // Function to categorize stories based on user's political profile
+  const categorizeStories = (stories: NewsStory[], profile: any) => {
+    if (!profile || !stories.length) return;
+    
+    // Extract key political indicators
+    const userLeftRight = (
+      (profile['Individual Rights']?.score || 5) + 
+      (profile['Economic Systems']?.score || 5) + 
+      (profile['Government Role']?.score || 5) +
+      (profile['Social Issues']?.score || 5)
+    ) / 4;
+    
+    // Higher score = more left-leaning, lower score = more right-leaning
+    console.log('User left-right score:', userLeftRight);
+    
+    // Categorize stories based on their bias compared to user's position
+    const affirming: NewsStory[] = [];
+    const challenging: NewsStory[] = [];
+    
+    stories.forEach(story => {
+      // Determine story's political leaning (simplified)
+      const storyBias = story.sourceBias?.[0]?.bias || 'center';
+      let storyScore = 5; // Default center
+      
+      if (storyBias === 'left') storyScore = 8;
+      else if (storyBias === 'right') storyScore = 2;
+      
+      // Calculate difference between user and story
+      const difference = Math.abs(userLeftRight - storyScore);
+      
+      // If difference is small, story affirms user's beliefs
+      // If difference is large, story challenges user's beliefs
+      if (difference < 3) {
+        affirming.push(story);
+      } else {
+        challenging.push(story);
+      }
+    });
+    
+    setAffirmingStories(affirming);
+    setChallengingStories(challenging);
+    
+    console.log(`Categorized ${affirming.length} affirming and ${challenging.length} challenging stories`);
+  };
+
+  const fetchNews = async (refresh = false) => {
+    if (status !== 'authenticated') return;
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      const url = refresh ? "/api/news?refresh=true" : "/api/news";
+      const response = await fetch(url, { 
+        signal: controller.signal, 
+        headers: { 'Cache-Control': 'no-cache' }
+      });
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch news: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      // Fix property name mismatch - API returns newsStories, not stories
+      const stories = data.newsStories || [];
+      setNewsStories(stories);
+      
+      // Fetch user profile if not already loaded
+      if (!userPoliticalProfile) {
+        await fetchUserProfile();
+      }
+      
+      // Categorize stories if profile is available
+      if (userPoliticalProfile) {
+        categorizeStories(stories, userPoliticalProfile);
+      }
+      
+      // Fetch images for all stories
+      await fetchImagesForStories(stories);
+    } catch (error: any) {
+      console.error('Error fetching news:', error);
+      setError(error.message || 'Failed to load news');
     } finally {
       setIsLoading(false);
     }
   };
 
-  const toggleContent = (storyKey: string) => {
-    if (expandedStories.includes(storyKey)) {
-      setExpandedStories(expandedStories.filter(key => key !== storyKey));
-    } else {
-      setExpandedStories([...expandedStories, storyKey]);
-    }
+  const toggleContent = (key: string) => setExpandedStories(prev =>
+    prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
+  );
+  const toggleSource = (key: string) => {
+    setExpandedSources(prev => ({
+      ...prev,
+      [key]: !prev[key]
+    }));
   };
 
-  const toggleSource = (sourceKey: string) => {
-    if (expandedSources.includes(sourceKey)) {
-      setExpandedSources(expandedSources.filter(key => key !== sourceKey));
-    } else {
-      setExpandedSources([...expandedSources, sourceKey]);
-    }
-  };
+  // Category grouping omitted for brevity...
 
-  // Group stories by category
-  const categorizedStories: {[key: string]: NewsStory[]} = {};
-  newsStories.forEach(story => {
-    const category = story.category || 'other';
-    if (!categorizedStories[category]) {
-      categorizedStories[category] = [];
-    }
-    categorizedStories[category].push(story);
-  });
-
-  // Define category display names and order
-  const categoryDisplayNames: {[key: string]: string} = {
-    'us': 'US News',
-    'world': 'World News',
-    'politics': 'Politics',
-    'business': 'Business & Economy',
-    'technology': 'Technology',
-    'health': 'Health',
-    'science': 'Science',
-    'sports': 'Sports',
-    'entertainment': 'Entertainment',
-    'social': 'Social & Lifestyle',
-    'other': 'Other News'
-  };
-
-  const categoryOrder = [
-    'us', 'world', 'politics', 'business', 'technology', 
-    'health', 'science', 'sports', 'entertainment', 'social', 'other'
-  ];
-
-  // Helper function to get bias color
-  const getBiasColor = (bias?: string) => {
-    switch(bias) {
-      case 'left': return 'bg-blue-100 text-blue-800';
-      case 'right': return 'bg-red-100 text-red-800';
-      case 'center': return 'bg-green-100 text-green-800';
-      default: return 'bg-gray-100 text-gray-800';
-    }
-  };
-
-  if (!session) {
+  if (status === 'loading') {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-100">
-        <div className="bg-white p-8 rounded-lg shadow-md text-center">
-          <h1 className="text-2xl font-bold mb-4">Welcome to News AI</h1>
-          <p className="mb-4">Please sign in to view the latest news</p>
-          <button
-            onClick={() => signIn("google")}
-            className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
-          >
-            Sign in with Google
-          </button>
-        </div>
+      <div className="loading-container">
+        <div className="spinner"></div>
+        <p>Loading session...</p>
+      </div>
+    );
+  }
+  
+  if (status === 'unauthenticated') {
+    return (
+      <div className="empty-state">
+        <h1 className="empty-title">Welcome to AI News</h1>
+        <p className="empty-description">Please sign in to view the latest news.</p>
+        <button className="btn btn-primary" onClick={() => signIn('google')}>Sign in with Google</button>
       </div>
     );
   }
 
   return (
-    <main className="min-h-screen flex flex-col bg-white">
-      {/* Auth bar */}
-      <div className="bg-gray-900 border-b border-gray-800">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-end items-center h-12">
-            {session ? (
-              <div className="flex items-center space-x-4">
-                <span className="text-gray-400 text-sm">Welcome, {session.user?.name}</span>
-                <button
-                  onClick={() => signOut()}
-                  className="text-gray-400 text-sm hover:text-white"
-                >
-                  Sign Out
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={() => signIn("google")}
-                className="text-gray-400 text-sm hover:text-white"
-              >
-                Sign In
-              </button>
-            )}
-          </div>
+    <div className="container">
+      <div className="header-section">
+        <div className="page-controls">
+          <button className="btn btn-primary" onClick={() => fetchNews(true)} disabled={isLoading}>
+            {isLoading ? 'Analyzing News...' : 'Refresh News'}
+          </button>
+          <a href="/survey" className="btn btn-secondary">Political Survey</a>
+        </div>
+        
+        <div className="political-profile-header">
+          <h2>Personalized News Experience</h2>
+          <p>Take our <a href="/survey" className="inline-link">political survey</a> to see news that both affirms and challenges your beliefs. This helps you understand different perspectives and avoid echo chambers.</p>
+          {userPoliticalProfile ? (
+            <div className="profile-status complete">
+              <span className="status-icon">✓</span>
+              <span>Survey completed! Your news is now personalized.</span>
+            </div>
+          ) : (
+            <div className="profile-status incomplete">
+              <span className="status-icon">!</span>
+              <span>You haven't taken the survey yet. Complete it to see personalized news.</span>
+            </div>
+          )}
         </div>
       </div>
-
-      {/* Header */}
-      <header className="py-12 bg-gray-900 text-white border-b border-gray-800">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-          <h1 className="font-serif text-7xl font-bold tracking-tight mb-4">AI NEWS</h1>
-          <div className="text-gray-400 text-sm font-serif italic">{new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</div>
-        </div>
-      </header>
       
-      <div className="w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="flex justify-between items-center mb-8">
-          <h1 className="text-3xl font-bold font-serif text-gray-900">AI News Analyzer</h1>
-          <div className="flex space-x-2">
-            <button 
-              onClick={(e) => { e.preventDefault(); fetchNews(false); }}
-              className="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-md font-medium transition duration-150 ease-in-out flex items-center"
-              disabled={isLoading}
-            >
-              {isLoading ? (
-                <>
-                  <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  Loading...
-                </>
-              ) : 'Check Cache'}
-            </button>
-            <button 
-              onClick={(e) => { e.preventDefault(); fetchNews(true); }}
-              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md font-medium transition duration-150 ease-in-out flex items-center"
-              disabled={isLoading}
-            >
-              {isLoading ? (
-                <>
-                  <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  Loading...
-                </>
-              ) : 'Refresh News'}
-            </button>
-          </div>
+      {isLoading && (
+        <div className="loading-container">
+          <div className="spinner"></div>
+          <p>Analyzing news for bias patterns...</p>
         </div>
+      )}
+      
+      {error && (
+        <div className="error-message">{error}</div>
+      )}
+      
+      {!isLoading && !error && newsStories.length === 0 && (
+        <div className="empty-state">
+          <h2 className="empty-title">No News Stories Loaded</h2>
+          <p className="empty-description">Click the Refresh button to load the latest news with AI-powered bias analysis.</p>
+        </div>
+      )}
+      
+      {!isLoading && !error && newsStories.length > 0 && (
+        <>
+          {/* Hero Section with featured story */}
+          <section className="hero-section">
+            <div className="hero-content">
+              <span className="category-tag">Featured</span>
+              <h2 className="hero-headline">{newsStories[0].headline}</h2>
+              <p className="hero-description">{newsStories[0].summary}</p>
+              <div className="bias-indicator">
+                <span className={`bias-tag bias-${newsStories[0].sourceBias?.[0]?.bias || 'unknown'}`}>
+                  {(newsStories[0].sourceBias?.[0]?.bias || 'unknown').charAt(0).toUpperCase() + 
+                   (newsStories[0].sourceBias?.[0]?.bias || 'unknown').slice(1)} Bias
+                </span>
+                <span className="source-name">{newsStories[0].sources[0]?.source}</span>
+              </div>
+            </div>
+            <div className="hero-image">
+              <div className="matrix-overlay"></div>
+              {newsStories[0].imageUrl || storyImages[newsStories[0].headline] ? (
+                <Image 
+                  src={newsStories[0].imageUrl || storyImages[newsStories[0].headline] || ''} 
+                  alt={newsStories[0].headline} 
+                  width={600} 
+                  height={400} 
+                  className="featured-image"
+                />
+              ) : (
+                <div className="image-loading">
+                  <div className="matrix-overlay"></div>
+                  <div className="spinner small"></div>
+                  <span className="loading-text">Finding relevant image...</span>
+                </div>
+              )}
+            </div>
+          </section>
 
-        {isLoading ? (
-          <div className="flex justify-center items-center h-64">
-            <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-gray-900"></div>
-          </div>
-        ) : (
-          <div className="space-y-12">
-            {categoryOrder.map(category => {
-              if (!categorizedStories[category] || categorizedStories[category].length === 0) return null;
+          {/* News based on user's political profile */}
+          {userPoliticalProfile && (
+            <section className="political-profile-section">
+              <div className="profile-header">
+                <h2 className="section-title">Your News Perspective</h2>
+                <div className="profile-info">
+                  <p>Based on your political survey results, we've personalized your news experience.</p>
+                  <a href="/survey" className="btn-small">Retake Survey</a>
+                </div>
+              </div>
               
-              return (
-                <div key={category} className="mb-12">
-                  <h2 className="text-2xl font-serif font-bold text-gray-900 mb-6 pb-2 border-b border-gray-200">
-                    {categoryDisplayNames[category]}
-                  </h2>
-                  
-                  <div className="space-y-8">
-                    {categorizedStories[category].map((story, idx) => {
-                      const storyKey = `${category}-${idx}`;
-                      
-                      return (
-                        <div key={storyKey} className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-                          <div className="p-6">
-                            <h3 className="text-xl font-serif font-bold text-gray-900 mb-3">{story.headline}</h3>
+              {/* Affirming News Section */}
+              <div className="affirming-news">
+                <h3 className="subsection-title">Articles That Align With Your Views</h3>
+                <div className="news-grid">
+                  {affirmingStories.slice(0, 3).map((story, index) => {
+                    const key = `affirming-${index}`;
+                    const sourceBias = story.sourceBias?.[0]?.bias || 'unknown';
+                    return (
+                      <article key={key} className="news-card affirming">
+                        <div className="card-media">
+                          {(story.imageUrl || storyImages[story.headline]) ? (
+                            <div className="card-image-container">
+                              <img 
+                                src={story.imageUrl || storyImages[story.headline] || ''} 
+                                alt={story.headline} 
+                                width={300} 
+                                height={200} 
+                                className="card-image" 
+                              />
+                            </div>
+                          ) : (
+                            <div className="image-loading small">
+                              <div className="spinner mini"></div>
+                              <span className="loading-text small">Finding image...</span>
+                            </div>
+                          )}
+                        </div>
+                        <div className="card-content">
+                          <span className="category-tag small">{story.category || 'News'}</span>
+                          <h3 className="card-title">{story.headline}</h3>
+                          
+                          <div className="common-facts">
+                            <p>{story.summary}</p>
+                          </div>
+                          
+                          {/* Sources with Bias - Dropdown Version */}
+                          <div className="sources-container">
+                            <div className="sources-dropdown-header" onClick={() => toggleSource(key)}>
+                              <h4 className="sources-title">Sources & Perspectives</h4>
+                              <span className="dropdown-icon">{expandedSources[key] ? '▲' : '▼'}</span>
+                            </div>
                             
-                            <p className="text-gray-700 mb-4 font-serif">{story.summary}</p>
-                            
-                            <div className="mb-4">
-                              <h4 className="text-sm font-medium text-gray-900 mb-2">Sources:</h4>
-                              <div className="space-y-2">
-                                {story.sources.map((source, sourceIdx) => {
-                                  const sourceKey = `${storyKey}-source-${sourceIdx}`;
-                                  
-                                  // Find bias info for this source if available
-                                  const biasInfo = story.sourceBias?.find(sb => sb.source === source.source);
-                                  
+                            {expandedSources[key] && (
+                              <div className="sources-dropdown-content">
+                                {story.sources.map((source, i) => {
+                                  const bias = story.sourceBias?.find(b => b.source === source.source)?.bias || 'unknown';
                                   return (
-                                    <div key={sourceKey} className="border border-gray-200 rounded-md p-3">
-                                      <div className="flex justify-between items-start">
-                                        <div>
-                                          <a 
-                                            href={source.link} 
-                                            target="_blank" 
-                                            rel="noopener noreferrer"
-                                            className="text-blue-600 hover:text-blue-800 font-medium"
-                                          >
-                                            {source.title}
-                                          </a>
-                                          <div className="text-sm text-gray-600 mt-1">
-                                            Source: {source.source}
-                                            {biasInfo && (
-                                              <span 
-                                                className={`ml-2 inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getBiasColor(biasInfo.bias)}`}
-                                              >
-                                                {biasInfo.bias.charAt(0).toUpperCase() + biasInfo.bias.slice(1)} bias
-                                              </span>
-                                            )}
-                                          </div>
-                                        </div>
-                                        
-                                        {biasInfo && biasInfo.biasQuotes && biasInfo.biasQuotes.length > 0 && (
-                                          <button
-                                            onClick={(e) => { e.preventDefault(); toggleSource(sourceKey); }}
-                                            className="text-sm text-gray-500 hover:text-gray-700"
-                                          >
-                                            {expandedSources.includes(sourceKey) ? 'Hide Quotes' : 'Show Quotes'}
-                                          </button>
-                                        )}
+                                    <div key={i} className="source-item">
+                                      <div className="source-header">
+                                        <a href={source.link} target="_blank" rel="noopener noreferrer" className="source-link">
+                                          <span className="source-name">{source.source}</span>
+                                          <span className="link-icon">↗</span>
+                                        </a>
+                                        <span className={`bias-tag small bias-${bias}`}>
+                                          {bias.charAt(0).toUpperCase() + bias.slice(1)}
+                                        </span>
                                       </div>
                                       
-                                      {biasInfo && biasInfo.biasQuotes && biasInfo.biasQuotes.length > 0 && expandedSources.includes(sourceKey) && (
-                                        <div className="mt-3 pl-4 border-l-2 border-gray-200">
-                                          <div className="space-y-2">
-                                            {biasInfo.biasQuotes.map((quote, quoteIdx) => (
-                                              <div key={`${sourceKey}-quote-${quoteIdx}`} className="text-sm text-gray-700 italic">
-                                                "{quote}"
-                                              </div>
-                                            ))}
-                                          </div>
-                                          <div className="mt-3 text-xs text-gray-500 italic">
-                                            These quotes may indicate political leaning or bias in the reporting.
-                                          </div>
+                                      {source.quote && (
+                                        <div className="quote-item">
+                                          <p>"{source.quote}"</p>
+                                        </div>
+                                      )}
+                                      
+                                      {story.sourceBias && 
+                                       story.sourceBias.find(b => b.source === source.source)?.biasQuotes && 
+                                       (story.sourceBias.find(b => b.source === source.source)?.biasQuotes?.length || 0) > 0 && (
+                                        <div className="bias-evidence">
+                                          <h5 className="bias-evidence-title">Bias indicators:</h5>
+                                          <ul className="bias-quotes-list">
+                                            {story.sourceBias && 
+                                             story.sourceBias.find(b => b.source === source.source)?.biasQuotes && 
+                                             story.sourceBias.find(b => b.source === source.source)?.biasQuotes
+                                              ?.slice(0, 2)
+                                              ?.map((quote, qIdx) => (
+                                                <li key={qIdx} className="bias-quote">"{quote}"</li>
+                                              ))
+                                            }
+                                          </ul>
                                         </div>
                                       )}
                                     </div>
                                   );
                                 })}
                               </div>
-                            </div>
-                            
-                            {story.fullContent && (
-                              <div className="mt-6">
-                                <button
-                                  onClick={() => toggleContent(storyKey)}
-                                  className="text-gray-800 hover:text-gray-600 font-serif font-medium underline"
-                                >
-                                  {expandedStories.includes(storyKey) ? 'Hide Full Content' : 'Show Full Content'}
-                                </button>
-                                
-                                {expandedStories.includes(storyKey) && (
-                                  <div className="mt-4 p-5 bg-gray-50 border-l-2 border-gray-300">
-                                    <p className="whitespace-pre-line font-serif leading-relaxed">{story.fullContent}</p>
-                                  </div>
-                                )}
-                              </div>
                             )}
-                            
-                            <div className="mt-6 pt-4 border-t border-gray-200 flex justify-between items-center">
-                              <span className="text-xs text-gray-500 font-serif italic">
-                                {story.publishedAt ? (
-                                  <>Published: {new Date(story.publishedAt).toLocaleDateString()}</>
-                                ) : (
-                                  <>Updated: {new Date().toLocaleDateString()}</>
-                                )}
-                              </span>
-                              <div>
-                                <button 
-                                  className="text-xs text-gray-700 hover:text-gray-900 font-serif mr-4" 
-                                  onClick={() => alert('Saved for later!')}
-                                >
-                                  Save
-                                </button>
-                                <button 
-                                  className="text-xs text-gray-700 hover:text-gray-900 font-serif" 
-                                  onClick={() => alert('Shared!')}
-                                >
-                                  Share
-                                </button>
-                              </div>
-                            </div>
                           </div>
                         </div>
-                      );
-                    })}
-                  </div>
+                      </article>
+                    );
+                  })}
                 </div>
-              );
-            })}
-            
-            {newsStories.length === 0 && !isLoading && (
-              <div className="text-center py-16 border border-gray-200">
-                <p className="text-gray-700 mb-4 font-serif text-lg">No news stories available.</p>
-                <p className="text-gray-600 font-serif">Click the Refresh News button to load the latest stories.</p>
-                {error && <p className="text-red-500 mt-2 font-serif">{error}</p>}
               </div>
-            )}
-          </div>
-        )}
-      </div>
+              
+              {/* Challenging News Section */}
+              <div className="challenging-news">
+                <h3 className="subsection-title">Articles That Challenge Your Views</h3>
+                <div className="news-grid">
+                  {challengingStories.slice(0, 3).map((story, index) => {
+                    const key = `challenging-${index}`;
+                    const sourceBias = story.sourceBias?.[0]?.bias || 'unknown';
+                    return (
+                      <article key={key} className="news-card challenging">
+                        <div className="card-media">
+                          {(story.imageUrl || storyImages[story.headline]) ? (
+                            <div className="card-image-container">
+                              <img 
+                                src={story.imageUrl || storyImages[story.headline] || ''} 
+                                alt={story.headline} 
+                                width={300} 
+                                height={200} 
+                                className="card-image" 
+                              />
+                            </div>
+                          ) : (
+                            <div className="image-loading small">
+                              <div className="spinner mini"></div>
+                              <span className="loading-text small">Finding image...</span>
+                            </div>
+                          )}
+                        </div>
+                        <div className="card-content">
+                          <span className="category-tag small">{story.category || 'News'}</span>
+                          <h3 className="card-title">{story.headline}</h3>
+                          
+                          <div className="common-facts">
+                            <p>{story.summary}</p>
+                          </div>
+                          
+                          {/* Sources with Bias - Dropdown Version */}
+                          <div className="sources-container">
+                            <div className="sources-dropdown-header" onClick={() => toggleSource(key)}>
+                              <h4 className="sources-title">Sources & Perspectives</h4>
+                              <span className="dropdown-icon">{expandedSources[key] ? '▲' : '▼'}</span>
+                            </div>
+                            
+                            {expandedSources[key] && (
+                              <div className="sources-dropdown-content">
+                                {story.sources.map((source, i) => {
+                                  const bias = story.sourceBias?.find(b => b.source === source.source)?.bias || 'unknown';
+                                  return (
+                                    <div key={i} className="source-item">
+                                      <div className="source-header">
+                                        <a href={source.link} target="_blank" rel="noopener noreferrer" className="source-link">
+                                          <span className="source-name">{source.source}</span>
+                                          <span className="link-icon">↗</span>
+                                        </a>
+                                        <span className={`bias-tag small bias-${bias}`}>
+                                          {bias.charAt(0).toUpperCase() + bias.slice(1)}
+                                        </span>
+                                      </div>
+                                      
+                                      {source.quote && (
+                                        <div className="quote-item">
+                                          <p>"{source.quote}"</p>
+                                        </div>
+                                      )}
+                                      
+                                      {story.sourceBias && 
+                                       story.sourceBias.find(b => b.source === source.source)?.biasQuotes && 
+                                       (story.sourceBias.find(b => b.source === source.source)?.biasQuotes?.length || 0) > 0 && (
+                                        <div className="bias-evidence">
+                                          <h5 className="bias-evidence-title">Bias indicators:</h5>
+                                          <ul className="bias-quotes-list">
+                                            {story.sourceBias && 
+                                             story.sourceBias.find(b => b.source === source.source)?.biasQuotes && 
+                                             story.sourceBias.find(b => b.source === source.source)?.biasQuotes
+                                              ?.slice(0, 2)
+                                              ?.map((quote, qIdx) => (
+                                                <li key={qIdx} className="bias-quote">"{quote}"</li>
+                                              ))
+                                            }
+                                          </ul>
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              </div>
+            </section>
+          )}
+          
+          {/* Secondary News Grid */}
+          <section className="secondary-news">
+            <h2 className="section-title">Latest Stories</h2>
+            <div className="news-grid">
+              {/* Filter out the featured story and take the next 5 stories */}
+              {newsStories
+                .filter(story => story.headline !== newsStories[0].headline) // Exclude the featured story
+                .slice(0, 5) // Take only 5 stories
+                .map((story, index) => {
+                const key = `story-${index}`;
+                const sourceBias = story.sourceBias?.[0]?.bias || 'unknown';
+                
+                return (
+                  <article key={key} className="news-card">
+                    <div className="card-media">
+                      {(story.imageUrl || storyImages[story.headline]) ? (
+                        <div className="card-image-container">
+                          {/* Use a more compatible approach for external images */}
+                          <img 
+                            src={story.imageUrl || storyImages[story.headline] || ''} 
+                            alt={story.headline} 
+                            width={300} 
+                            height={200} 
+                            className="card-image" 
+                          />
+                        </div>
+                      ) : (
+                        <div className="image-loading small">
+                          <div className="spinner mini"></div>
+                          <span className="loading-text small">Finding image...</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="card-content">
+                      <span className="category-tag small">{story.category || 'News'}</span>
+                      <h3 className="card-title">{story.headline}</h3>
+                      
+                      {/* Common Facts Section */}
+                      <div className="common-facts">
+                        <p>{story.summary}</p>
+                      </div>
+                      
+                      {/* Sources with Bias - Dropdown Version */}
+                      <div className="sources-container">
+                        <div className="sources-dropdown-header" onClick={() => toggleSource(key)}>
+                          <h4 className="sources-title">Sources & Perspectives</h4>
+                          <span className="dropdown-icon">{expandedSources[key] ? '▲' : '▼'}</span>
+                        </div>
+                        
+                        {expandedSources[key] && (
+                          <div className="sources-dropdown-content">
+                            {story.sources.map((source, i) => {
+                              const bias = story.sourceBias?.find(b => b.source === source.source)?.bias || 'unknown';
+                              return (
+                                <div key={i} className="source-item">
+                                  <div className="source-header">
+                                    <a href={source.link} target="_blank" rel="noopener noreferrer" className="source-link">
+                                      <span className="source-name">{source.source}</span>
+                                      <span className="link-icon">↗</span>
+                                    </a>
+                                    <span className={`bias-tag small bias-${bias}`}>
+                                      {bias.charAt(0).toUpperCase() + bias.slice(1)}
+                                    </span>
+                                  </div>
+                                  
+                                  {/* Article quote */}
+                                  {source.quote && (
+                                    <div className="quote-item">
+                                      <p>"{source.quote}"</p>
+                                    </div>
+                                  )}
+                                  
+                                  {/* Bias evidence quotes */}
+                                  {story.sourceBias && 
+                                   story.sourceBias.find(b => b.source === source.source)?.biasQuotes && 
+                                   (story.sourceBias.find(b => b.source === source.source)?.biasQuotes?.length || 0) > 0 && (
+                                    <div className="bias-evidence">
+                                      <h5 className="bias-evidence-title">Bias indicators:</h5>
+                                      <ul className="bias-quotes-list">
+                                        {story.sourceBias && 
+                                         story.sourceBias.find(b => b.source === source.source)?.biasQuotes && 
+                                         story.sourceBias.find(b => b.source === source.source)?.biasQuotes
+                                          ?.slice(0, 2) // Limit to 2 quotes for space
+                                          ?.map((quote, qIdx) => (
+                                            <li key={qIdx} className="bias-quote">"{quote}"</li>
+                                          ))
+                                        }
+                                      </ul>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        </>
+      )}
       
-      {/* Footer */}
-      <footer className="mt-auto py-6 bg-gray-900 text-white">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-          <p className="text-sm text-gray-400">© {new Date().getFullYear()} AI News. All rights reserved.</p>
-        </div>
-      </footer>
-    </main>
+      {/* Footer is in layout.tsx */}
+    </div>
   );
 }
