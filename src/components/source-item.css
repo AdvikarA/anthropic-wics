@@ -1,0 +1,95 @@
+.moderating-statement {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  border-radius: 0.375rem;
+  background-color: rgba(243, 244, 246, 0.7);
+  border-left: 3px solid #3b82f6;
+}
+
+.moderating-statement p {
+  font-size: 0.875rem;
+  font-style: italic;
+  color: #4b5563;
+  line-height: 1.4;
+}
+
+.moderating-statement.affirming {
+  border-left-color: #10b981;
+}
+
+.moderating-statement.challenging {
+  border-left-color: #f59e0b;
+}
+
+.source-item {
+  margin-bottom: 1rem;
+  padding: 1rem;
+  border-radius: 0.5rem;
+  background-color: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.source-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.source-name {
+  font-weight: 500;
+}
+
+.bias-tag {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 9999px;
+}
+
+.bias-tag.bias-left {
+  background-color: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+}
+
+.bias-tag.bias-right {
+  background-color: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+}
+
+.bias-tag.bias-center {
+  background-color: rgba(16, 185, 129, 0.1);
+  color: #10b981;
+}
+
+.bias-tag.bias-unknown {
+  background-color: rgba(107, 114, 128, 0.1);
+  color: #6b7280;
+}
+
+.quote-item {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-left: 2px solid #e5e7eb;
+  font-style: italic;
+}
+
+.bias-evidence {
+  margin-top: 0.75rem;
+}
+
+.bias-evidence-title {
+  font-size: 0.875rem;
+  font-weight: 500;
+  margin-bottom: 0.25rem;
+}
+
+.bias-quotes-list {
+  list-style-type: disc;
+  padding-left: 1.25rem;
+  font-size: 0.875rem;
+}
+
+.bias-quote {
+  margin-bottom: 0.25rem;
+  font-style: italic;
+}

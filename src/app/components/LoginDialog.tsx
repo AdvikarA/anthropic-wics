@@ -14,7 +14,7 @@ async function signUp(email: string, password: string, name: string) {
     email,
     password,
     options: {
-      data: { name },
+      data: { full_name: name },
       emailRedirectTo: `${window.location.origin}/auth/callback`
     }
   });
@@ -71,7 +71,7 @@ export default function LoginDialog({ open, onClose }: LoginDialogProps) {
   };
 
   return (
-    <Dialog open={open} onClose={onClose}>
+    <Dialog open={open} onOpenChange={(isOpen: boolean) => { if (!isOpen) onClose(); }}>
       <div className="w-full max-w-md p-8 space-y-8 bg-white rounded-lg shadow-md">
         <div className="text-center">
           <h1 className="text-2xl font-bold">{isSignUp ? 'Create Account' : 'Sign In'}</h1>
@@ -139,10 +139,17 @@ export default function LoginDialog({ open, onClose }: LoginDialogProps) {
         <div className="text-center">
           <button
             type="button"
-            onClick={() => setIsSignUp(!isSignUp)}
-            className="text-sm text-indigo-600 hover:text-indigo-500"
+            onClick={() => supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin } })}
+            className="flex justify-center w-full px-4 py-2 mt-4 text-sm font-medium text-white bg-red-600 border border-transparent rounded-md shadow-sm hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
           >
-            {isSignUp ? 'Already have an account? Sign in' : 'Need an account? Sign up'}
+            Continue with Google
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsSignUp(!isSignUp)}
+            className="text-sm text-indigo-600 hover:text-indigo-500 mt-2 block"
+          >
+            {isSignUp ? 'Already have an account? Sign in with email' : 'Need an account? Sign up with email'}
           </button>
         </div>
       </div>

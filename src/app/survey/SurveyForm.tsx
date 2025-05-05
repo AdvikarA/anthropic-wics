@@ -1,16 +1,12 @@
 "use client";
 import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import {
-  Chart as ChartJS,
-  RadialLinearScale,
-  PointElement,
-  LineElement,
-  Filler,
-  Tooltip,
-  Legend
-} from "chart.js";
+import './survey-styles.css';
+import { Radar } from 'react-chartjs-2';
+import { Chart as ChartJS, RadialLinearScale, PointElement, LineElement, Filler, Tooltip, Legend } from 'chart.js';
+import PoliticalCompass from '@/components/PoliticalCompass';
 import { motion, AnimatePresence } from "framer-motion";
+import { supabase } from '@/lib/supabase';
 
 ChartJS.register(
   RadialLinearScale,
@@ -142,7 +138,7 @@ const questions: Question[] = [
     ]
   },
   {
-    text: "When you hear a political argument from the other party, you first:",
+    text: "When you hear a political argument from the other party, you typically:",
     category: "Truth-Seeking",
     options: [
       { text: "Search for factual evidence before reacting", value: 10, weight: 1.2 },
@@ -213,79 +209,141 @@ export default function SurveyForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
+  const [personalityProfile, setPersonalityProfile] = useState<any>(null);
+  const [politicalAxes, setPoliticalAxes] = useState<{
+    libertyScore: number;
+    socialScore: number;
+    globalistScore?: number;
+    pragmaticScore?: number;
+    individualRights?: number;
+    inclusivity?: number;
+    nationalSecurity?: number;
+    economicFreedom?: number;
+    environmentalism?: number;
+  } | null>(null);
+  const [politicalType, setPoliticalType] = useState<string>('');
+  const [showDialog, setShowDialog] = useState(false);
 
   useEffect(() => {
-    // Update progress bar
-    setProgress((currentQuestion / questions.length) * 100);
+    // Update progress bar and log
+    const newProgress = (currentQuestion / questions.length) * 100;
+    setProgress(newProgress);
+    console.log('Progress updated:', newProgress);
   }, [currentQuestion]);
 
   const handleOptionSelect = (optionIdx: number) => {
+    console.log(`Option selected: Q${currentQuestion} option ${optionIdx}`, questions[currentQuestion].options[optionIdx]);
     const option = questions[currentQuestion].options[optionIdx];
     const newResponses = [...responses];
     newResponses[currentQuestion] = {value: option.value, weight: option.weight};
     setResponses(newResponses);
+    console.log('Responses updated:', newResponses);
     
     // Move to next question or submit if last
     if (currentQuestion < questions.length - 1) {
+      console.log('Advancing to next question:', currentQuestion + 1);
       setTimeout(() => {
         setCurrentQuestion(currentQuestion + 1);
       }, 500); // Slight delay for smooth transition
     } else {
+      console.log('Last question reached, submitting survey');
       handleSubmit();
     }
   };
 
   const handleSubmit = async () => {
+    console.log('handleSubmit initiated');
     setLoading(true);
     setError(null);
     
     try {
+      console.log('Preparing to submit survey...');
       // Prepare the survey data
       const surveyData = { 
         responses: responses.map(r => ({
           value: r.value,
           weight: r.weight
-        }))
+        })),
+        // Also include answers array for backward compatibility
+        answers: responses.map(r => r.value)
       };
+      console.log('Survey data payload:', surveyData);
       
-      console.log('Submitting survey data:', surveyData);
+      // Retrieve Supabase session token for auth header
+      console.log('Retrieving Supabase session');
+      let accessToken;
+      try {
+        const {
+          data: { session }
+        } = await supabase.auth.getSession();
+        console.log('Session fetched:', session);
+        accessToken = session?.access_token;
+      } catch (sessErr) {
+        console.error('Error fetching session:', sessErr);
+      }
+      if (!accessToken) console.warn('No accessToken found; requests may fail');
       
+      console.log('Sending POST to /api/survey');
       const res = await fetch("/api/survey", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+          ...(accessToken && { Authorization: `Bearer ${accessToken}` })
+        },
         body: JSON.stringify(surveyData)
       });
-      
-      // Handle non-OK responses
-      if (!res.ok) {
-        const errorText = await res.text();
-        console.error('Survey submission error:', errorText);
-        throw new Error(errorText || `Server error: ${res.status}`);
+      console.log('Received response from /api/survey with status:', res.status);
+      if (res.status === 401) {
+        console.error('Unauthorized: auth session missing or expired');
       }
-      
-      // Parse the response
-      const result = await res.json();
-      console.log('Survey submission successful:', result);
-      
-      // Store the results in localStorage as a fallback
+      let json;
       try {
-        localStorage.setItem('userPoliticalProfile', JSON.stringify(result));
-        console.log('Survey results saved to localStorage');
-      } catch (storageErr) {
-        console.error('Error saving to localStorage:', storageErr);
+        json = await res.json();
+        console.log('Response JSON:', json);
+      } catch (parseErr) {
+        console.error('Error parsing JSON response:', parseErr);
+        throw parseErr;
       }
       
-      // Show success message
-      setError(null);
+      if (!res.ok) {
+        if (res.status === 401) {
+          setError('Unauthorized: please log in again');
+        }
+        console.error('Non-OK HTTP status:', res.status, res.statusText);
+        throw new Error(json.error || `Server error: ${res.status}`);
+      }
+      console.log('Survey submission success:', json);
       
-      // Redirect to home page after successful submission with a slight delay
-      setTimeout(() => {
-        router.push('/');
-      }, 1000);
+      // Extract data from the response
+      let profile, axes, type;
+      
+      if (json.profile) {
+        // New API response format
+        profile = json.profile.personality_profile;
+        axes = json.profile.political_axes;
+        type = json.profile.political_type;
+      } else {
+        // Legacy format
+        profile = json.personalityProfile;
+        axes = json.politicalAxes;
+        type = json.politicalType;
+      }
+      
+      console.log('Extracted profile data:', { profile, axes, type });
+      
+      setPersonalityProfile(profile);
+      setPoliticalAxes(axes);
+      setPoliticalType(type);
+      // persist profile
+      localStorage.setItem('userPersonalityProfile', JSON.stringify(profile));
+      setShowDialog(true);
+      
+      // stop loading
+      setLoading(false);
     } catch (err: any) {
       console.error('Error in survey submission:', err);
       setError(err.message || "Submission failed. Please try again.");
-    } finally {
       setLoading(false);
     }
   };
@@ -364,6 +422,179 @@ export default function SurveyForm() {
           </div>
         )}
       </div>
+      
+      {/* Modern Modal popup */}
+      {showDialog && personalityProfile && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <div className="modal-header">
+              <div className="flex justify-between items-center">
+                <h2 className="modal-title">Your Political Profile</h2>
+                <button 
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                  onClick={() => {
+                    setShowDialog(false);
+                    router.push('/');
+                  }}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            
+            <div className="modal-body">
+              <div className="mb-6">
+                <div className="inline-block px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm font-medium mb-2">
+                  {personalityProfile.type}
+                </div>
+                <h3 className="text-xl font-semibold text-gray-800 mb-2">{politicalType}</h3>
+                <p className="text-gray-600">{personalityProfile.description}</p>
+              </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                <div>
+                  <h4 className="text-sm font-medium text-gray-500 mb-2">Political Compass</h4>
+                  <div className="mb-4">
+                    {politicalAxes && (
+                      <PoliticalCompass
+                        libertyScore={politicalAxes.libertyScore || 0}
+                        socialScore={politicalAxes.socialScore || 0}
+                      />
+                    )}
+                  </div>
+                  
+                  <h4 className="text-sm font-medium text-gray-500 mt-4 mb-2">Political Dimensions</h4>
+                  <div className="space-y-4">
+                    <div>
+                      <div className="flex justify-between text-xs text-gray-500 mb-1">
+                        <span>Authoritarian</span>
+                        <span>Libertarian</span>
+                      </div>
+                      <div className="relative h-2 bg-gray-200 rounded-full overflow-hidden">
+                        <div className="absolute inset-0 flex items-center">
+                          <div className="w-3 h-3 bg-blue-500 rounded-full z-10" 
+                               style={{ left: `${((politicalAxes?.libertyScore || 0) + 10) * 5}%` }}></div>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <div className="flex justify-between text-xs text-gray-500 mb-1">
+                        <span>Conservative</span>
+                        <span>Progressive</span>
+                      </div>
+                      <div className="relative h-2 bg-gray-200 rounded-full overflow-hidden">
+                        <div className="absolute inset-0 flex items-center">
+                          <div className="w-3 h-3 bg-blue-500 rounded-full z-10" 
+                               style={{ left: `${((politicalAxes?.socialScore || 0) + 10) * 5}%` }}></div>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <div className="flex justify-between text-xs text-gray-500 mb-1">
+                        <span>Nationalist</span>
+                        <span>Globalist</span>
+                      </div>
+                      <div className="relative h-2 bg-gray-200 rounded-full overflow-hidden">
+                        <div className="absolute inset-0 flex items-center">
+                          <div className="w-3 h-3 bg-blue-500 rounded-full z-10" 
+                               style={{ left: `${((politicalAxes?.globalistScore || 0) + 10) * 5}%` }}></div>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <div className="flex justify-between text-xs text-gray-500 mb-1">
+                        <span>Ideological</span>
+                        <span>Pragmatic</span>
+                      </div>
+                      <div className="relative h-2 bg-gray-200 rounded-full overflow-hidden">
+                        <div className="absolute inset-0 flex items-center">
+                          <div className="w-3 h-3 bg-blue-500 rounded-full z-10" 
+                               style={{ left: `${((politicalAxes?.pragmaticScore || 0) + 10) * 5}%` }}></div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                
+                <div>
+                  <h4 className="text-sm font-medium text-gray-500 mb-2">Engagement Metrics</h4>
+                  <div className="h-48 bg-white">
+                    <Radar
+                      data={{
+                        labels: [
+                          'Individual Rights', 
+                          'Inclusivity', 
+                          'National Security',
+                          'Economic Freedom',
+                          'Environmentalism'
+                        ],
+                        datasets: [{
+                          label: 'Political Dimensions',
+                          data: [
+                            politicalAxes?.individualRights || 0,
+                            politicalAxes?.inclusivity || 0,
+                            politicalAxes?.nationalSecurity || 0,
+                            politicalAxes?.economicFreedom || 0,
+                            politicalAxes?.environmentalism || 0
+                          ],
+                          backgroundColor: 'rgba(59, 130, 246, 0.2)',
+                          borderColor: 'rgba(59, 130, 246, 1)',
+                          pointBackgroundColor: 'rgba(59, 130, 246, 1)',
+                          pointBorderColor: '#fff',
+                        }]
+                      }}
+                      options={{
+                        maintainAspectRatio: false,
+                        scales: { r: { beginAtZero: true, max: 10 } },
+                        plugins: {
+                          legend: {
+                            position: 'bottom',
+                            labels: {
+                              boxWidth: 10,
+                              font: {
+                                size: 11
+                              }
+                            }
+                          },
+                          tooltip: {
+                            callbacks: {
+                              label: function(context) {
+                                return `${context.label}: ${context.raw}/10`;
+                              }
+                            }
+                          }
+                        }
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+              
+              <div className="text-center mt-8">
+                <p className="text-gray-500 mb-4">Your profile will be used to personalize your news experience.</p>
+              </div>
+              
+              {/* Close button */}
+              <div className="modal-footer">
+                <button
+                  className="modal-close-button"
+                  onClick={() => {
+                    setShowDialog(false);
+                    router.push('/');
+                  }}
+                >
+                  Go to Personalized News
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { supabase } from './supabase';
+import { supabase } from '@/lib/supabase';
 import type { NewsStory, NewsSource, UniqueClaim, SourceBias, BiasQuote } from '../types/news';
 
 // Type definitions for database tables

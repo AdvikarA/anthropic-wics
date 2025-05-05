@@ -27,15 +27,27 @@ export async function GET(request: Request) {
       .from('users')
       .select('survey_results')
       .eq('email', userEmail)
-      .single();
+      .maybeSingle();
     
     if (userError) {
       console.error('Error fetching user profile:', userError);
       return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
     
-    // Return the survey results if they exist
-    if (userData && userData.survey_results) {
+    // If no user row exists, create a new account
+    if (!userData) {
+      console.log('No user found for', userEmail, '; creating new account');
+      const { data: newUser, error: insertError } = await supabase
+        .from('users')
+        .insert({ email: userEmail })
+        .select('survey_results')
+        .maybeSingle();
+      if (insertError) {
+        console.error('Error creating user account:', insertError);
+        return NextResponse.json({ error: 'Failed to create account' }, { status: 500 });
+      }
+      return NextResponse.json({ surveyResults: null, message: 'User account created; no survey results yet' });
+    } else if (userData && userData.survey_results) {
       return NextResponse.json({ 
         surveyResults: userData.survey_results,
         message: 'User profile retrieved successfully'

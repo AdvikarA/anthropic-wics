@@ -30,4 +30,6 @@ export interface NewsStory {
   commonFacts?: string;
   uniqueClaims?: UniqueClaim[];
   sourceBias?: SourceBias[];
+  // Optional image URL loaded from Supabase
+  imageUrl?: string;
 }

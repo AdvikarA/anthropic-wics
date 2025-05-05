@@ -98,7 +98,7 @@ const determineIdeology = (scores: Record<string, number>): PoliticalIdeology =>
 };
 
 interface SurveyResults {
-  [category: string]: { score: number } | number;
+  [category: string]: { score: number } | number | string | undefined;
   engagementScore: number;
   antiPolarizationScore?: number;
   antiPolarizationLevel?: string;
@@ -143,14 +143,14 @@ export function SimpleDialog({ isOpen, onClose, onChallenge, results }: SimpleDi
   const categories = Object.keys(results)
     .filter(key => !['engagementScore', 'antiPolarizationScore', 'antiPolarizationLevel', 'updatedAt'].includes(key));
   
-  const dataValues = categories.map(cat => 
+  const dataValues: number[] = categories.map(cat => Number(
     typeof results[cat] === 'object' ? results[cat].score : results[cat]
-  );
+  ));
   
   // Prepare scores for ideology determination
   const scores: Record<string, number> = {};
   categories.forEach(cat => {
-    scores[cat] = typeof results[cat] === 'object' ? results[cat].score : results[cat];
+    scores[cat] = Number(typeof results[cat] === 'object' ? results[cat].score : results[cat]);
   });
   
   const ideology = determineIdeology(scores);

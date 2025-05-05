@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import axios from 'axios';
 import { Anthropic } from '@anthropic-ai/sdk';
+import { supabase } from '@/lib/supabase';
 
 // Initialize APIs
 const NEWS_API_KEY = process.env.NEWS_API_KEY || '';
@@ -23,12 +24,28 @@ export async function GET(request: Request) {
   };
 
   try {
-    // Check for a refresh query parameter to determine if we should fetch new data
+    // Check for query parameters
     const url = new URL(request.url);
     const shouldRefresh = url.searchParams.get('refresh') === 'true';
+    const isDynamic = url.searchParams.get('dynamic') === 'true';
     
+    // If no refresh parameter, try to return stored stories instead of empty array
     if (!shouldRefresh) {
-      console.log('No refresh parameter found, returning empty news stories');
+      try {
+        const supabaseService = await import('@/lib/supabase-service');
+        const { getNewsStories } = supabaseService;
+        if (typeof getNewsStories === 'function') {
+          const existingStories = await getNewsStories();
+          if (existingStories?.length > 0) {
+            console.log(`Serving ${existingStories.length} stored stories from Supabase without refresh`);
+            return NextResponse.json({ newsStories: existingStories, timestamp: new Date().toISOString() }, { status: 200 });
+          }
+        }
+      } catch (err) {
+        console.error('Error loading stored stories when no refresh parameter:', err);
+      }
+      
+      console.log('No refresh parameter found and no stored stories, returning empty array');
       return NextResponse.json({ 
         newsStories: [],
         timestamp: new Date().toISOString()
@@ -67,12 +84,21 @@ export async function GET(request: Request) {
       // Continue to fallback if import fails
     }
     
-    if (!shouldRefresh) {
-      console.log('No refresh parameter found, returning empty news stories');
-      return NextResponse.json({ 
-        newsStories: [],
-        timestamp: new Date().toISOString()
-      }, { status: 200 });
+    // Check if we should use stored news instead of dynamic fetch
+    if (!isDynamic) {
+      try {
+        const supabaseService = await import('@/lib/supabase-service');
+        const { getNewsStories } = supabaseService;
+        if (typeof getNewsStories === 'function') {
+          const existingStories = await getNewsStories();
+          if (existingStories?.length > 0) {
+            console.log(`Serving ${existingStories.length} stored stories from Supabase`);
+            return NextResponse.json({ newsStories: existingStories, timestamp: new Date().toISOString() }, { status: 200 });
+          }
+        }
+      } catch (err) {
+        console.error('Error loading stored stories:', err);
+      }
     }
     
     console.log('Refresh parameter found, fetching from NewsAPI...');
@@ -108,8 +134,46 @@ export async function GET(request: Request) {
       'the-wall-street-journal'
     ];
     
-    // Fetch top headlines from each source
-    for (const source of sources) {
+    const maxCalls = 15;
+    let sourcesToCall = sources.slice(0, maxCalls);
+    
+    // Check for sources that have been recently covered (last 24 hours)
+    try {
+      const { data: recentAnalysis } = await supabase
+        .from('news_analysis')
+        .select('sources, created_at')
+        .gte('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
+      
+      const coveredSources = new Set<string>();
+      if (recentAnalysis && recentAnalysis.length > 0) {
+        for (const row of recentAnalysis) {
+          if (Array.isArray(row.sources)) {
+            row.sources.forEach((src: any) => {
+              if (src.source) coveredSources.add(src.source.toLowerCase());
+            });
+          }
+        }
+        
+        // Filter out sources already covered
+        const filteredSources = sourcesToCall.filter(source => !coveredSources.has(source));
+        console.log(`Filtered out ${sourcesToCall.length - filteredSources.length} already covered sources`);
+        sourcesToCall = filteredSources;
+      }
+    } catch (error) {
+      console.error('Error checking for recent sources:', error);
+      // Continue with all sources if there's an error
+    }
+    
+    console.log(`Limiting dynamic NewsAPI calls to ${sourcesToCall.length} sources`);
+    
+    // If all sources are already covered, use a subset to refresh content
+    if (sourcesToCall.length === 0) {
+      console.log('All sources already covered recently, using a subset for refresh');
+      sourcesToCall = sources.slice(0, 3); // Use top 3 sources for refresh
+    }
+    
+    // Fetch top headlines from each source (rate-limited)
+    for (const source of sourcesToCall) {
       try {
         console.log(`Fetching headlines from ${source}...`);
         const sourceUrl = `${NEWS_API_BASE_URL}/top-headlines?sources=${source}&pageSize=10&apiKey=${NEWS_API_KEY}`;
@@ -274,15 +338,16 @@ export async function GET(request: Request) {
       
       // Add to news stories
       const newsStory = {
-        headline: mainArticle.title,
-        summary: summary,
-        sources: sources,
+        headline: mainArticle.title || 'Untitled Article',
+        summary: summary || '',
+        sources: sources || [],
         publishedAt: mainArticle.publishedAt,
-        mainKeywords: mainArticle.keywords,
-        category: event.category,
-        commonFacts: commonFacts,
-        uniqueClaims: uniqueClaims,
-        sourceBias: sourceBiasInfo
+        mainKeywords: mainArticle.keywords || [],
+        category: event.category || 'general',
+        commonFacts: commonFacts || '',
+        uniqueClaims: uniqueClaims.length > 0 ? uniqueClaims : undefined,
+        sourceBias: sourceBiasInfo.length > 0 ? sourceBiasInfo : undefined,
+        imageUrl: mainArticle.urlToImage || null // Add image URL from the main article
       };
       
       newsStories.push(newsStory);
@@ -290,8 +355,16 @@ export async function GET(request: Request) {
       // Save to Supabase if the function is available
       if (typeof saveNewsStory === 'function') {
         try {
-          await saveNewsStory(newsStory);
-          console.log(`Saved story to Supabase: ${mainArticle.title.substring(0, 30)}...`);
+          // Add news_type field to the story before saving
+          const storyWithType = {
+            ...newsStory,
+            news_type: 'dynamic', // Mark as dynamically generated
+            id: crypto.randomUUID() // Ensure we have a valid ID
+          };
+          
+          await saveNewsStory(storyWithType);
+          const titlePreview = mainArticle.title ? mainArticle.title.substring(0, 30) + '...' : 'Untitled Article';
+          console.log(`Saved story to Supabase: ${titlePreview}`);
         } catch (saveError) {
           console.error('Error saving to Supabase:', saveError);
         }

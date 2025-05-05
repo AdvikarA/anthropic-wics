@@ -1,4 +1,4 @@
-// File: /Users/ananthkumara/CS/anthropic-wics/src/app/api/auth/[...nextauth]/route.ts
+// File: C:\Users\chens\AI and Coding\Hackathons\anthropic-wics\src\app\api\auth\[...nextauth]\route.ts
 import * as entry from '../../../../../../src/app/api/auth/[...nextauth]/route.js'
 import type { NextRequest } from 'next/server.js'
 
